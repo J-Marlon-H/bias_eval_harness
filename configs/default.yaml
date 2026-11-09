@@ -3,7 +3,9 @@ model_id: Qwen/Qwen3-1.7B
 device: auto
 scoring_mode: auto
 prompt_condition: plain
-smoke_items: 20
+bbq_items_per_category: 20
+bootstrap_resamples: 200
+mmlu_items_per_subject: 2
 max_new_tokens: 8
 invalid_rate_warning_threshold: 0.05
 prompts:

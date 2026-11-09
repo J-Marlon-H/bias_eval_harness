@@ -4,9 +4,7 @@ APAI/STAT4011 Group 18. This document is the build brief for the coding agent. I
 
 ## 1. Goal
 
-Build a small, reusable evaluation harness that measures social bias (focus: race) and general capability for any language model, either:
-- a local open-weights model (Hugging Face), or
-- a remote model behind an API endpoint.
+Build a small, reusable evaluation harness that measures social bias (focus: race) and general capability for local open-weights Hugging Face models.
 
 The user works through one Jupyter notebook. Each cell runs one step (load model, run eval, show results, create splits). All heavy logic lives in Python modules under `src/`.
 
@@ -18,7 +16,7 @@ In scope:
 - BBQ bias evaluation (9 categories, Race_ethnicity in focus)
 - MMLU general-capability evaluation
 - Two scoring modes: log-likelihood and generation
-- Two model backends: local Hugging Face and OpenAI-compatible API
+- Local Hugging Face model backend
 - Optional debiasing system prompt (the "prompt-only baseline")
 - Metrics, bootstrap confidence intervals, paired comparison between runs
 - Template-level train/val/test split creation, triggered from the notebook after the user has seen the full results
@@ -215,12 +213,12 @@ Log-likelihood mode (preferred, default for local models):
 - Compute the log-probability of each answer letter (" A", " B", " C") after the prompt. If an answer letter is multiple tokens for a model, score the full token sequence by summing its token log-probabilities. Prediction = argmax.
 - Handle tokenization carefully (leading space vs no space; check what the chat template produces). Add tests that verify tokenization and scoring for representative model tokenizers. Save the scoring method with every run.
 
-Generation mode (fallback, and for API endpoints without log-probabilities):
+Generation mode (fallback when local log-likelihood scoring is not selected):
 - Greedy decoding (temperature 0), short `max_new_tokens`.
 - Robust answer parser: extract the first valid letter, also accept the option text itself. Strip any `<think>...</think>` block.
 - Unparseable answers are recorded as `invalid`. Report the invalid rate as its own metric; never silently count them as wrong or as "unknown".
 
-Mode selection: `auto` picks log-likelihood if the backend supports it, otherwise generation. The mode used is saved with every run. Also allow forcing generation mode on local models, so local and API results can be compared under the same method.
+Mode selection: `auto` picks log-likelihood if the backend supports it, otherwise generation. The mode used is saved with every run. Also allow forcing generation mode on local models.
 
 ## 8. Model Backends
 
@@ -228,12 +226,7 @@ Mode selection: `auto` picks log-likelihood if the backend supports it, otherwis
 - Hugging Face `transformers`, automatic device and dtype selection, optional `adapter_path` via `peft`.
 - Supports both scoring modes. Batching where memory allows.
 
-`openai_compatible`:
-- Base URL, model name and API key from config / `.env`. Works for OpenAI, OpenRouter, Together, and local servers such as vLLM or Ollama.
-- Log-likelihood mode only if the endpoint returns `logprobs` with `top_logprobs` for the first generated token; detect this with a test call and fall back to generation otherwise.
-- Retries with backoff, rate-limit setting, request caching.
-
-New backends must be addable by implementing the same interface.
+Remote model APIs are out of scope.
 
 ## 9. Metrics
 
@@ -320,7 +313,7 @@ bbq-bias-eval/
   .gitignore              # .env, data/raw/, results/ (except summary), model caches, checkpoints
   configs/
     default.yaml          # seed, sample sizes, prompts, bootstrap settings
-    models.yaml           # named model presets (the two candidates, an API example)
+    models.yaml           # named local model presets
   src/biaseval/
     __init__.py
     config.py
@@ -330,7 +323,6 @@ bbq-bias-eval/
     prompts.py
     backends/base.py
     backends/hf_local.py
-    backends/openai_compatible.py
     parsing.py
     runner.py             # runs a dataset through a backend, caching and resume
     metrics.py
@@ -356,7 +348,7 @@ bbq-bias-eval/
 - When the build is complete, pin all dependencies in `requirements.txt`. Setup for the teammate must be: clone, create venv, `pip install -r requirements.txt`, copy `.env.example` to `.env`, open the notebook.
 - Never commit secrets, model weights or raw downloaded data.
 - Clear notebook outputs before committing (optionally set up `nbstripout`).
-- README: purpose, setup, how to get access to the gated Llama model, how to run the smoke test, how to add a model or API endpoint, how to add a custom dataset, metric definitions, and the contamination note from section 5.2.
+- README: purpose, setup, how to get access to a gated model, how to run an evaluation, how to add a custom dataset, metric definitions, and the contamination note from section 5.2.
 - Initialize a git repo with clean, small commits per milestone, ready to push to GitHub.
 
 ## 15. Milestones and Acceptance Criteria
@@ -366,14 +358,14 @@ bbq-bias-eval/
 3. Prompt builder and `hf_local` backend in both scoring modes. Smoke test runs on Qwen3-1.7B on CPU.
 4. Metrics and statistics with unit tests on hand-computed examples.
 5. Runner with caching, resume, run folders and results index.
-6. `openai_compatible` backend with logprob detection and generation fallback (testable against a local Ollama or vLLM server if no paid API is available).
+6. MMLU capability check and local run index.
 7. Split module and notebook split cells.
 8. Full notebook, plots, comparison cells, custom dataset example.
 9. Pinned `requirements.txt`, final README, clean git history.
 
 Done when:
 - The notebook runs top to bottom in smoke-test mode on CPU without errors.
-- Switching between the two candidate models, or to an API endpoint, only requires changing the config cell.
+- Switching between supported local models only requires changing the config cell.
 - The same items and seed give identical results on repeated runs (log-likelihood mode).
 - All tests pass.
 - A teammate can set the project up from the README alone.
@@ -381,6 +373,6 @@ Done when:
 ## 16. Open Points for the User (do not block the build)
 
 - GPU or cluster access: unknown. Build for CPU first; device selection is automatic.
-- API provider: unknown. The OpenAI-compatible backend covers most options.
+- Remote model APIs are out of scope.
 - Final sample sizes: to be decided after timing the smoke test.
 - Which categories to hold out: decided in the notebook after the full evaluation.

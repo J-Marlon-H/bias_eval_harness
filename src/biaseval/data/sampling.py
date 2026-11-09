@@ -63,3 +63,23 @@ def sample_bbq(
         return data.iloc[0:0].copy()
     result = pd.concat(samples).sort_index()
     return result.sample(frac=1, random_state=seed).reset_index(drop=True)
+
+
+def sample_mmlu(
+    data: pd.DataFrame,
+    n_per_subject: int,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Take a reproducible sample with the same maximum size from each MMLU subject."""
+    if n_per_subject < 1:
+        raise ValueError("n_per_subject must be positive")
+    if "subject" not in data:
+        raise ValueError("MMLU sample input is missing the subject column")
+    rng = np.random.default_rng(seed)
+    selected = []
+    for _, subject_frame in data.groupby("subject", sort=True):
+        indexes = subject_frame.index.to_numpy()
+        count = min(n_per_subject, len(indexes))
+        chosen = rng.choice(indexes, size=count, replace=False)
+        selected.extend(chosen.tolist())
+    return data.loc[selected].sample(frac=1, random_state=seed).reset_index(drop=True)
