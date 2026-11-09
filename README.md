@@ -1,6 +1,6 @@
 # BBQ Bias Evaluation Harness
 
-A notebook-driven harness for evaluating local Hugging Face causal language models on BBQ bias questions and MMLU general capability. It supports log-likelihood scoring (preferred) or answer generation, resumable per-item evaluation, clustered bootstrap intervals, and paired comparisons for BBQ runs. API models, training, data splits, and custom datasets are out of scope.
+A notebook-driven harness for evaluating local Hugging Face causal language models on BBQ bias questions and MMLU general capability. It supports log-likelihood scoring (preferred) or answer generation, resumable per-item evaluation, and clustered bootstrap intervals. API models, training, data splits, and custom datasets are out of scope.
 
 ## Setup
 
@@ -23,7 +23,7 @@ Open `notebooks/bias_eval.ipynb` and run cells in order. The default BBQ run tak
 
 Each completed item is appended to its run's `predictions.jsonl`. If a run is interrupted, copy the printed run ID into `RESUME_RUN_ID` and rerun the evaluation cell; already completed items are skipped. Resume is refused if the model, scoring method, prompt, seed, or sample differs. The local `results/index.csv` tracks running, interrupted, and completed runs.
 
-The notebook reports 95% percentile bootstrap intervals for BBQ metrics, resampling clusters by `(category, question_index)`. Undefined draws are skipped and counted. A simple category plot and optional plain-versus-debias paired comparison are included. Paired comparisons use only items with valid predictions in both runs and require the same scoring method.
+The notebook reports 95% percentile bootstrap intervals for BBQ metrics, resampling clusters by `(category, question_index)`. Undefined draws are skipped and counted. A simple category plot is included.
 
 MMLU is an optional capability check, disabled by default so it does not add another model run. Enable `RUN_MMLU` to load the cached `cais/mmlu` test split and evaluate a deterministic sample of two questions per subject with the plain prompt. An optional debias-prompt side-check can be enabled separately. The MMLU files are cached by Hugging Face.
 
