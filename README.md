@@ -21,7 +21,7 @@ Choose a PyTorch wheel appropriate for the available hardware if the pinned defa
 
 Open `notebooks/bias_eval.ipynb` and run cells in order. The default BBQ run takes 20 items per category across all nine categories (180 items total), balanced across condition and question polarity. On CPU, use fewer items per category if the run would exceed your preferred time.
 
-Each completed item is appended to its run's `predictions.jsonl`. If a run is interrupted, copy the printed run ID into `RESUME_RUN_ID` and rerun the evaluation cell; already completed items are skipped. Resume is refused if the model, scoring method, prompt, seed, or sample differs. The local `results/index.csv` tracks running, interrupted, and completed runs.
+Each completed item is appended to its run's `predictions.jsonl`. Runs are kept separately by model ID, prompt, dataset, scoring method, and sample. By default, the notebook reuses the newest compatible run in the current device's local `results/runs/` folder, skipping completed items; if none exists, it creates a run that later notebook executions on that device can reuse. A colleague without a compatible local run starts their own. To force a fresh run for a configuration, delete that run's folder first. The local `results/index.csv` tracks running, interrupted, and completed runs.
 
 The notebook reports 95% percentile bootstrap intervals for BBQ metrics, resampling clusters by `(category, question_index)`. Undefined draws are skipped and counted. A simple category plot is included.
 
@@ -47,6 +47,6 @@ The nine single-category BBQ files contain 31,356 usable items after metadata de
 
 Each run is saved under `results/runs/` with predictions, metrics, confidence intervals, and its resolved configuration. Run outputs, the local results index, model caches, and downloaded data are gitignored.
 
-### Inspect incorrect answers
+### Interactive performance report
 
-The final notebook cell writes `results/wrong_answers.html`, a local page showing only incorrect or invalid BBQ and MMLU answers, with their context/questions, choices, and the model's answer beside the correct answer. Green marks the correct choice; red marks the model's choice. For BBQ, the report also shows per-category/condition totals and accuracy. Search or filter by dataset, BBQ category/condition, or MMLU subject; a live summary updates for combined filters. Open it using the notebook's clickable report link.
+The final notebook cell writes `results/wrong_answers.html`, a local interactive dashboard of the saved runs on that device. Runs are grouped by model ID; select a specific model, prompt, and dataset run from the dropdown. Each selected run has a high-level overview, separate BBQ charts for ambiguous and disambiguated questions, MMLU subject accuracy, and its incorrect/invalid answers with context, choices, and correct/model answers. Category, condition, and subject filters update the views; click a chart group to drill into it. MMLU results are usually only two questions per subject in the smoke sample, so subject rankings are exploratory. Open the dashboard using the notebook's clickable link.

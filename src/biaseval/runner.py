@@ -54,6 +54,31 @@ def _evaluation_signature(config: dict[str, Any]) -> dict[str, Any]:
     return {field: config.get(field) for field in fields}
 
 
+def _find_compatible_run(
+    results_dir: Path,
+    config: dict[str, Any],
+) -> str | None:
+    runs_dir = results_dir / "runs"
+    if not runs_dir.exists():
+        return None
+    expected_signature = _evaluation_signature(config)
+    compatible = []
+    for run_dir in runs_dir.iterdir():
+        config_path = run_dir / "config.json"
+        predictions_path = run_dir / "predictions.jsonl"
+        if not run_dir.is_dir() or not config_path.is_file() or not predictions_path.is_file():
+            continue
+        with config_path.open(encoding="utf-8") as stream:
+            previous_config = json.load(stream)
+        if _evaluation_signature(previous_config) == expected_signature:
+            compatible.append(
+                (str(previous_config.get("created_at", "")), run_dir.name)
+            )
+    if not compatible:
+        return None
+    return max(compatible)[1]
+
+
 def _run_evaluation(
     data: pd.DataFrame,
     backend: Any,
@@ -113,7 +138,11 @@ def _run_evaluation(
         data.to_json(orient="records", force_ascii=False).encode("utf-8")
     ).hexdigest()
     results_dir = Path(results_dir)
-    run_id = resume_run_id or create_run_id(identity, dataset, prompt_condition)
+    run_id = (
+        resume_run_id
+        if resume_run_id not in {None, "auto"}
+        else create_run_id(identity, dataset, prompt_condition)
+    )
     run_dir = results_dir / "runs" / run_id
     predictions_path = run_dir / "predictions.jsonl"
 
@@ -135,6 +164,17 @@ def _run_evaluation(
         "invalid_rate_warning_threshold": invalid_rate_warning_threshold,
         "bootstrap_resamples": bootstrap_resamples,
     }
+
+    if resume_run_id == "auto":
+        resume_run_id = _find_compatible_run(results_dir, config)
+        if resume_run_id:
+            print(f"Auto-resuming compatible local run: {resume_run_id}")
+        else:
+            print("No compatible local run found; creating a new run.")
+        run_id = resume_run_id or create_run_id(identity, dataset, prompt_condition)
+        run_dir = results_dir / "runs" / run_id
+        predictions_path = run_dir / "predictions.jsonl"
+        config["run_id"] = run_id
 
     if resume_run_id:
         config_path = run_dir / "config.json"

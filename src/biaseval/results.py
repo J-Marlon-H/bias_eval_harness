@@ -7,6 +7,8 @@ import json
 import os
 import re
 import tempfile
+import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ RUN_INDEX_FIELDS = (
     "bias_score_disambiguated",
     "invalid_rate",
 )
+_LOCKED_INDEX_PATHS: set[Path] = set()
 
 
 def _safe_name(value: str) -> str:
@@ -63,6 +66,9 @@ def update_run_index(
     if status not in {"running", "complete", "interrupted"}:
         raise ValueError(f"Unsupported run status: {status}")
     index_path = Path(results_dir) / "index.csv"
+    resolved_index_path = index_path.resolve()
+    if resolved_index_path in _LOCKED_INDEX_PATHS:
+        return
     existing: dict[str, dict[str, str]] = {}
     if index_path.exists():
         with index_path.open(newline="", encoding="utf-8") as stream:
@@ -111,7 +117,26 @@ def update_run_index(
         writer = csv.DictWriter(stream, fieldnames=RUN_INDEX_FIELDS)
         writer.writeheader()
         writer.writerows(existing.values())
-    os.replace(temporary, index_path)
+    replace_error = None
+    for attempt in range(4):
+        try:
+            os.replace(temporary, index_path)
+            replace_error = None
+            break
+        except PermissionError as exc:
+            replace_error = exc
+            if attempt < 3:
+                time.sleep(0.1 * (2**attempt))
+    if replace_error is not None:
+        _LOCKED_INDEX_PATHS.add(resolved_index_path)
+        temporary.unlink(missing_ok=True)
+        warnings.warn(
+            f"Could not update the secondary run index {index_path}: {replace_error}. "
+            "Predictions and run configuration remain saved in the run folder; "
+            "close any program holding index.csv and rerun to refresh the index.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def read_run_index(results_dir: str | Path) -> list[dict[str, str]]:

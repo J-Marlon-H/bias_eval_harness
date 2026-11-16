@@ -118,6 +118,66 @@ class RunnerTests(unittest.TestCase):
             config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
             self.assertEqual(config["status"], "complete")
 
+    def test_auto_resume_reuses_compatible_local_run_and_creates_first_run(self):
+        data = pd.DataFrame([
+            {
+                "id": "Race_ethnicity:1", "category": "Race_ethnicity",
+                "example_id": "1", "question_index": "template",
+                "condition": "ambig", "label": 2, "target_loc": 0,
+                "unknown_loc": 2, "label_type": "label", "context": "Two people.",
+                "question": "Who?", "options": ["Person A", "Person B", "Unknown"],
+                "source": "bbq",
+            },
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            first_backend = FakeBackend()
+            _, _, first_run_dir = run_evaluation(
+                data,
+                first_backend,
+                results_dir=directory,
+                model_id="fake-model",
+                bootstrap_resamples=1,
+                resume_run_id="auto",
+            )
+            self.assertEqual(first_backend.calls, 1)
+
+            second_backend = FakeBackend()
+            _, _, second_run_dir = run_evaluation(
+                data,
+                second_backend,
+                results_dir=directory,
+                model_id="fake-model",
+                bootstrap_resamples=1,
+                resume_run_id="auto",
+            )
+            other_model_backend = FakeBackend()
+            _, _, other_model_run_dir = run_evaluation(
+                data,
+                other_model_backend,
+                results_dir=directory,
+                model_id="fine-tuned-model",
+                bootstrap_resamples=1,
+                resume_run_id="auto",
+            )
+            prompted_backend = FakeBackend()
+            _, _, prompted_run_dir = run_evaluation(
+                data,
+                prompted_backend,
+                results_dir=directory,
+                model_id="fake-model",
+                prompt_condition="template",
+                system_prompt="Use only explicit evidence.",
+                bootstrap_resamples=1,
+                resume_run_id="auto",
+            )
+
+        self.assertEqual(first_run_dir, second_run_dir)
+        self.assertEqual(second_backend.calls, 0)
+        self.assertNotEqual(first_run_dir, other_model_run_dir)
+        self.assertEqual(other_model_backend.calls, 1)
+        self.assertNotEqual(first_run_dir, prompted_run_dir)
+        self.assertEqual(prompted_backend.calls, 1)
+
     def test_resume_rejects_changed_sample(self):
         data = pd.DataFrame([{
             "id": "Race_ethnicity:1", "category": "Race_ethnicity",

@@ -138,7 +138,9 @@ def load_bbq(
     missing = expected.difference(metadata.columns)
     if missing:
         raise ValueError(f"BBQ metadata is missing required columns: {sorted(missing)}")
-    metadata = metadata[list(expected)].copy()
+    metadata = metadata[
+        ["category", "example_id", "label_type", "target_loc"]
+    ].copy()
     metadata["example_id"] = metadata["example_id"].astype(str)
     duplicated = metadata.duplicated(["category", "example_id"], keep=False)
     if duplicated.any():
