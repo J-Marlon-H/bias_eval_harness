@@ -14,9 +14,12 @@ import pandas as pd
 
 from biaseval.metrics import compute_bbq_metrics
 from biaseval.parsing import parse_answer
-from biaseval.prompts import build_prompt
+from biaseval.prompts import build_answer_fallback_prompt, build_prompt
 from biaseval.results import create_run_id, update_run_index, write_json
 from biaseval.stats import bootstrap_bbq_metrics
+
+PREDICTION_PARSER_VERSION = "thinking-block-v2"
+PROMPT_BUILDER_VERSION = "thinking-completion-v1"
 
 
 def _read_saved_predictions(path: Path) -> list[dict[str, Any]]:
@@ -42,6 +45,7 @@ def _evaluation_signature(config: dict[str, Any]) -> dict[str, Any]:
         "backend",
         "prompt_condition",
         "system_prompt",
+        "enable_thinking",
         "scoring_mode",
         "scoring_method",
         "sample_size",
@@ -50,8 +54,31 @@ def _evaluation_signature(config: dict[str, Any]) -> dict[str, Any]:
         "max_new_tokens",
         "invalid_rate_warning_threshold",
         "bootstrap_resamples",
+        "prediction_parser_version",
+        "prompt_builder_version",
     )
-    return {field: config.get(field) for field in fields}
+    return {
+        field: (
+            config.get(field, False)
+            if field == "enable_thinking"
+            else (
+                None
+                if (
+                    field == "prompt_builder_version"
+                    and not config.get("enable_thinking", False)
+                )
+                else (
+                    None
+                    if (
+                        field == "prediction_parser_version"
+                        and config.get("scoring_mode") != "generation"
+                    )
+                    else config.get(field)
+                )
+            )
+        )
+        for field in fields
+    }
 
 
 def _find_compatible_run(
@@ -72,11 +99,15 @@ def _find_compatible_run(
             previous_config = json.load(stream)
         if _evaluation_signature(previous_config) == expected_signature:
             compatible.append(
-                (str(previous_config.get("created_at", "")), run_dir.name)
+                (
+                    previous_config.get("status") == "complete",
+                    str(previous_config.get("created_at", "")),
+                    run_dir.name,
+                )
             )
     if not compatible:
         return None
-    return max(compatible)[1]
+    return max(compatible)[2]
 
 
 def _run_evaluation(
@@ -90,6 +121,7 @@ def _run_evaluation(
     model_id: str | None,
     prompt_condition: str,
     system_prompt: str | None,
+    enable_thinking: bool,
     scoring_mode: str,
     max_new_tokens: int,
     seed: int,
@@ -114,8 +146,13 @@ def _run_evaluation(
         raise ValueError("invalid_rate_warning_threshold must be between 0 and 1")
 
     tokenizer = getattr(backend, "tokenizer", None)
-    first_item = data.iloc[0].to_dict()
-    probe_prompt = build_prompt(first_item, system_prompt=system_prompt, tokenizer=tokenizer)
+    first_item = {str(key): value for key, value in data.iloc[0].to_dict().items()}
+    probe_prompt = build_prompt(
+        first_item,
+        system_prompt=system_prompt,
+        tokenizer=tokenizer,
+        enable_thinking=enable_thinking,
+    )
     if scoring_mode == "auto" and hasattr(backend, "probe_logprobs"):
         backend.probe_logprobs(probe_prompt)
     actual_mode = scoring_mode
@@ -140,7 +177,7 @@ def _run_evaluation(
     results_dir = Path(results_dir)
     run_id = (
         resume_run_id
-        if resume_run_id not in {None, "auto"}
+        if resume_run_id is not None and resume_run_id != "auto"
         else create_run_id(identity, dataset, prompt_condition)
     )
     run_dir = results_dir / "runs" / run_id
@@ -153,6 +190,7 @@ def _run_evaluation(
         "dataset": dataset,
         "prompt_condition": prompt_condition,
         "system_prompt": system_prompt,
+        "enable_thinking": enable_thinking,
         "scoring_mode": actual_mode,
         "scoring_method": scoring_method,
         "sample_size": len(data),
@@ -163,6 +201,8 @@ def _run_evaluation(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "invalid_rate_warning_threshold": invalid_rate_warning_threshold,
         "bootstrap_resamples": bootstrap_resamples,
+        "prediction_parser_version": PREDICTION_PARSER_VERSION,
+        "prompt_builder_version": PROMPT_BUILDER_VERSION,
     }
 
     if resume_run_id == "auto":
@@ -187,6 +227,7 @@ def _run_evaluation(
                 f"Run {resume_run_id} does not match the model, prompts, scoring mode, "
                 "seed, or evaluation items requested"
             )
+        previous_config.setdefault("enable_thinking", False)
         config = previous_config
     else:
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -219,8 +260,13 @@ def _run_evaluation(
     try:
         with predictions_path.open("a", encoding="utf-8") as stream:
             for _, series in iterator:
-                item = series.to_dict()
-                prompt = build_prompt(item, system_prompt=system_prompt, tokenizer=tokenizer)
+                item = {str(key): value for key, value in series.to_dict().items()}
+                prompt = build_prompt(
+                    item,
+                    system_prompt=system_prompt,
+                    tokenizer=tokenizer,
+                    enable_thinking=enable_thinking,
+                )
                 if actual_mode == "loglik":
                     scores = backend.score_options([prompt], len(item["options"]))[0]
                     prediction: int | str = int(np.argmax(scores))
@@ -228,6 +274,23 @@ def _run_evaluation(
                 else:
                     raw_text = backend.generate([prompt], max_new_tokens=max_new_tokens)[0]
                     prediction = parse_answer(raw_text, item["options"])
+                    fallback_raw_text = None
+                    fallback_used = False
+                    if enable_thinking and prediction == "invalid":
+                        fallback_prompt = build_answer_fallback_prompt(
+                            item,
+                            raw_text,
+                            tokenizer=tokenizer,
+                        )
+                        fallback_raw_text = backend.generate(
+                            [fallback_prompt], max_new_tokens=8
+                        )[0]
+                        fallback_prediction = parse_answer(
+                            fallback_raw_text, item["options"]
+                        )
+                        if fallback_prediction != "invalid":
+                            prediction = fallback_prediction
+                        fallback_used = True
                     scores = None
 
                 record = {
@@ -236,6 +299,10 @@ def _run_evaluation(
                     "prediction": prediction,
                     "option_scores": scores,
                     "raw_text": raw_text,
+                    "fallback_used": fallback_used if actual_mode == "generation" else False,
+                    "fallback_raw_text": (
+                        fallback_raw_text if actual_mode == "generation" else None
+                    ),
                     "correct": prediction == int(item["label"])
                     if isinstance(prediction, int)
                     else None,
@@ -316,6 +383,7 @@ def run_evaluation(
     model_id: str | None = None,
     prompt_condition: str = "plain",
     system_prompt: str | None = None,
+    enable_thinking: bool = False,
     scoring_mode: str = "auto",
     max_new_tokens: int = 8,
     seed: int = 42,
@@ -338,6 +406,7 @@ def run_evaluation(
         model_id=model_id,
         prompt_condition=prompt_condition,
         system_prompt=system_prompt,
+        enable_thinking=enable_thinking,
         scoring_mode=scoring_mode,
         max_new_tokens=max_new_tokens,
         seed=seed,
@@ -355,6 +424,7 @@ def run_mmlu_evaluation(
     model_id: str | None = None,
     prompt_condition: str = "plain",
     system_prompt: str | None = None,
+    enable_thinking: bool = False,
     scoring_mode: str = "auto",
     max_new_tokens: int = 8,
     seed: int = 42,
@@ -420,6 +490,7 @@ def run_mmlu_evaluation(
         model_id=model_id,
         prompt_condition=prompt_condition,
         system_prompt=system_prompt,
+        enable_thinking=enable_thinking,
         scoring_mode=scoring_mode,
         max_new_tokens=max_new_tokens,
         seed=seed,

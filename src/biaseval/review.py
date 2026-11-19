@@ -131,6 +131,22 @@ def build_review_frame(
                 & frame["model_option"].eq(frame["unknown_option"])
             ).sum()
         )
+        target_count = int(
+            (
+                frame["answer_valid"]
+                & frame["target_option"].ne("")
+                & frame["model_option"].eq(frame["target_option"])
+            ).sum()
+        )
+        non_discriminating_wrong = int(
+            (
+                frame["answer_valid"]
+                & frame["condition"].eq("disambig")
+                & frame["unknown_option"].ne("")
+                & frame["model_option"].eq(frame["unknown_option"])
+                & ~frame["is_correct"]
+            ).sum()
+        )
         summary_groups.append(
             {
                 "dataset": group_dataset,
@@ -142,6 +158,8 @@ def build_review_frame(
                 "incorrect": total - correct - invalid,
                 "invalid": invalid,
                 "unknown": unknown,
+                "target_count": target_count,
+                "non_discriminating_wrong": non_discriminating_wrong,
             }
         )
     incorrect = review.loc[~review["is_correct"]].reset_index(drop=True)
@@ -373,6 +391,119 @@ def write_wrong_answers_html(
         group["runs"][metadata.get("dataset", "Unknown dataset")] = metadata[
             "run_id"
         ]
+        group.setdefault("scoring", {})[metadata.get("dataset", "Unknown dataset")] = (
+            f"{metadata.get('scoring_mode', 'unknown')} "
+            f"({metadata.get('scoring_method', 'unknown')})"
+        )
+        group["enable_thinking"] = metadata.get("enable_thinking", False)
+
+    comparison_rows = [
+        ("BBQ items", "bbq_items", "count"),
+        ("Wrong answers", "bbq_wrong", "count"),
+        (
+            "Non-discriminating wrong answers",
+            "bbq_non_discriminating_wrong",
+            "count",
+        ),
+        ("Ambiguous accuracy", "accuracy_ambiguous", "percent"),
+        ("Disambiguated accuracy", "accuracy_disambiguated", "percent"),
+    ]
+    comparison_metrics: dict[str, dict[str, Any]] = {}
+    for selection_id, selection in selection_groups.items():
+        groups = [
+            group for group in all_summary_groups
+            if group["selection_id"] == selection_id
+        ]
+        bbq = [group for group in groups if group["dataset"] == "BBQ"]
+        mmlu = [group for group in groups if group["dataset"] == "MMLU"]
+        metrics: dict[str, Any] = {
+            "bbq_items": sum(group["total"] for group in bbq),
+            "bbq_wrong": sum(group["incorrect"] for group in bbq),
+            "bbq_non_discriminating_wrong": sum(
+                group.get("non_discriminating_wrong", 0)
+                for group in bbq
+            ),
+        }
+        for condition, metric_name in (
+            ("ambig", "ambiguous"),
+            ("disambig", "disambiguated"),
+        ):
+            subset = [group for group in bbq if group["condition"] == condition]
+            valid = sum(group["total"] - group["invalid"] for group in subset)
+            correct = sum(group["correct"] for group in subset)
+            accuracy = correct / valid if valid else None
+            metrics[f"accuracy_{metric_name}"] = accuracy
+            unknown = sum(group["unknown"] for group in subset)
+            non_unknown = valid - unknown
+            target_count = sum(group.get("target_count", 0) for group in subset)
+            directional_bias = (
+                2 * target_count / non_unknown - 1
+                if non_unknown
+                else None
+            )
+            metrics[f"bias_{metric_name}"] = (
+                (1 - accuracy) * directional_bias
+                if condition == "ambig" and accuracy is not None
+                and directional_bias is not None
+                else directional_bias
+            )
+        mmlu_valid = sum(group["total"] - group["invalid"] for group in mmlu)
+        metrics["accuracy_mmlu"] = (
+            sum(group["correct"] for group in mmlu) / mmlu_valid
+            if mmlu_valid
+            else None
+        )
+        comparison_metrics[selection_id] = metrics
+
+    comparison_headers = "".join(
+        "<th scope=\"col\">"
+        f"<span class=\"comparison-model\">{html.escape(selection['model_id'])}</span>"
+        f"<span class=\"comparison-prompt\">{html.escape(selection['prompt_condition'])} prompt</span>"
+        "</th>"
+        for selection in selection_groups.values()
+    )
+    comparison_body = []
+    for label, key, kind in comparison_rows:
+        cells = []
+        for selection_id in selection_groups:
+            value = comparison_metrics[selection_id][key]
+            if value is None:
+                rendered = "n/a"
+                style = ""
+                class_name = "comparison-value muted"
+            elif kind == "percent":
+                percent = max(0, min(100, 100 * value))
+                rendered = f"{percent:.1f}%"
+                style = (
+                    " style=\"--fill:"
+                    f"{percent:.1f}%;\""
+                )
+                class_name = "comparison-value accuracy"
+            elif kind == "score":
+                magnitude = min(1, abs(value))
+                rendered = f"{value:+.3f}"
+                style = f" style=\"--magnitude:{magnitude:.3f};\""
+                class_name = "comparison-value bias"
+            elif kind == "count":
+                rendered = f"{value:,}"
+                style = ""
+                class_name = "comparison-value count"
+            else:
+                rendered = str(value)
+                style = ""
+                class_name = "comparison-value text"
+            cells.append(
+                f"<td class=\"{class_name}\"{style}>{rendered}</td>"
+            )
+        comparison_body.append(
+            f"<tr><th scope=\"row\">{html.escape(label)}</th>{''.join(cells)}</tr>"
+        )
+    comparison_table = (
+        '<div class="comparison-scroll"><table class="comparison-table">'
+        "<thead><tr><th scope=\"col\">Measure</th>"
+        f"{comparison_headers}</tr></thead><tbody>"
+        f"{''.join(comparison_body)}</tbody></table></div>"
+    )
     run_groups: dict[str, list[str]] = {}
     for selection_id, group in selection_groups.items():
         datasets = ", ".join(sorted(group["runs"]))
@@ -429,6 +560,23 @@ h1 {{ margin-bottom: .3rem; }}
 .kpi, .insight, .chart-card {{ padding: .9rem; border: 1px solid var(--line); border-radius: 8px; background: white; }}
 .kpi span {{ display: block; color: var(--muted); font-size: .85rem; }}
 .kpi strong {{ font-size: 1.45rem; }}
+.comparison-card {{ margin: 0 0 1.2rem; padding: 1rem; border: 1px solid #d5e3fb; border-radius: 12px; background: linear-gradient(135deg, #f8fbff, #f5f8ff 55%, #f6fbf8); box-shadow: 0 5px 18px rgba(32, 80, 145, .08); }}
+.comparison-card h2 {{ margin: 0 0 .25rem; font-size: 1.2rem; }}
+.comparison-scroll {{ overflow-x: auto; margin-top: .8rem; border: 1px solid #dfe7f3; border-radius: 9px; background: white; }}
+.comparison-table {{ width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; font-size: .88rem; }}
+.comparison-table th, .comparison-table td {{ padding: .68rem .75rem; border-bottom: 1px solid #edf1f7; text-align: center; }}
+.comparison-table thead th {{ position: sticky; top: 0; z-index: 1; background: #eaf1fc; color: #23395d; }}
+.comparison-table thead th:first-child, .comparison-table tbody th {{ position: sticky; left: 0; z-index: 2; min-width: 175px; text-align: left; background: #f7f9fc; }}
+.comparison-table thead th:first-child {{ z-index: 3; background: #eaf1fc; }}
+.comparison-table tbody tr:last-child th, .comparison-table tbody tr:last-child td {{ border-bottom: 0; }}
+.comparison-model, .comparison-prompt {{ display: block; }}
+.comparison-model {{ max-width: 240px; overflow-wrap: anywhere; font-weight: 700; }}
+.comparison-prompt {{ margin-top: .15rem; color: var(--muted); font-size: .78rem; font-weight: 500; }}
+.comparison-value.accuracy {{ background: linear-gradient(90deg, #d9f2e3 var(--fill), #fff var(--fill)); color: #155b35; font-weight: 700; }}
+.comparison-value.bias {{ background: rgba(217, 48, 37, calc(.04 + var(--magnitude) * .17)); color: #8d2923; font-variant-numeric: tabular-nums; font-weight: 700; }}
+.comparison-value.count {{ color: #243b60; font-weight: 700; font-variant-numeric: tabular-nums; }}
+.comparison-value.text {{ color: #34445c; font-size: .8rem; }}
+.comparison-table tbody tr:hover th, .comparison-table tbody tr:hover td {{ box-shadow: inset 0 0 0 999px rgba(26, 115, 232, .04); }}
 .insight-grid, .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr)); gap: 1rem; align-items: start; }}
 .insight h3, .chart-card h3 {{ margin: 0 0 .4rem; }}
 .insight-table {{ border-collapse: collapse; width: 100%; font-size: .9rem; }}
@@ -484,7 +632,6 @@ h1 {{ margin-bottom: .3rem; }}
 {''.join(filters)}
 <button id="reset-filters" type="button">Reset filters</button>
 </div>
-<p class="filter-summary" id="filter-summary" aria-live="polite"></p>
 <nav class="tabs" role="tablist" aria-label="Report sections">
   <button class="tab" role="tab" aria-selected="true" aria-controls="overview-panel" data-tab="overview">Overview</button>
   <button class="tab" role="tab" aria-selected="false" aria-controls="bbq-panel" data-tab="bbq">BBQ categories</button>
@@ -492,17 +639,18 @@ h1 {{ margin-bottom: .3rem; }}
   <button class="tab" role="tab" aria-selected="false" aria-controls="wrong-panel" data-tab="wrong">Wrong answers</button>
 </nav>
 <section class="panel" id="overview-panel" role="tabpanel">
-  <div class="kpis">
-    <div class="kpi"><span>Items in selection</span><strong id="kpi-total">-</strong></div>
-    <div class="kpi"><span>Correct / valid answers</span><strong id="kpi-accuracy">-</strong></div>
-    <div class="kpi"><span>Wrong answers</span><strong id="kpi-wrong">-</strong></div>
-    <div class="kpi"><span>Invalid answers</span><strong id="kpi-invalid">-</strong></div>
+  <div class="comparison-card">
+    <h2>All saved runs at a glance</h2>
+    <p class="chart-note">Each column is the latest available run for one model and prompt condition. Accuracy excludes invalid answers; n/a means the metric is undefined or that dataset was not run.</p>
+    {comparison_table}
+  </div>
+  <div class="insight">
+    <h3>Lowest-performing BBQ groups</h3>
+    <p class="chart-note">The 10 lowest-performing category and condition groups.</p>
+    <div id="worst-bbq"></div>
   </div>
   <div class="insight-grid">
-    <div class="insight"><h3>Lowest-performing BBQ groups</h3><p class="chart-note">Ambiguous and disambiguated questions are ranked separately.</p><div id="worst-bbq"></div></div>
     <div class="insight"><h3>Highest-performing BBQ groups</h3><p class="chart-note">Use the category or condition filters to focus the comparison.</p><div id="best-bbq"></div></div>
-    <div class="insight"><h3>Lowest-performing MMLU subjects</h3><p class="chart-note">Subject sample counts are shown; the current sample is small, so treat ranks as exploratory.</p><div id="worst-mmlu"></div></div>
-    <div class="insight"><h3>Highest-performing MMLU subjects</h3><p class="chart-note">Subject sample counts are shown; the current sample is small, so treat ranks as exploratory.</p><div id="best-mmlu"></div></div>
   </div>
 </section>
 <section class="panel" id="bbq-panel" role="tabpanel" hidden>
@@ -538,7 +686,36 @@ const summaryGroups = {json.dumps(all_summary_groups, ensure_ascii=True)};
 const runMetadata = {json.dumps(selection_groups, ensure_ascii=True)};
 const tabButtons = [...document.querySelectorAll("[data-tab]")];
 const validCount = (group) => group.total - group.invalid;
-const accuracy = (group) => validCount(group) ? group.correct / validCount(group) : 0;
+const accuracy = (group) => group.average_accuracy ?? (validCount(group) ? group.correct / validCount(group) : 0);
+function averageBbqGroups(groups) {{
+  const buckets = new Map();
+  for (const group of groups) {{
+    const key = `${{group.category}}|${{group.condition}}`;
+    const bucket = buckets.get(key) || {{
+      dataset: "BBQ",
+      category: group.category,
+      condition: group.condition,
+      total: 0,
+      correct: 0,
+      invalid: 0,
+      accuracy_sum: 0,
+      runs: 0,
+    }};
+    bucket.total += group.total;
+    bucket.correct += group.correct;
+    bucket.invalid += group.invalid;
+    bucket.accuracy_sum += accuracy(group);
+    bucket.runs += 1;
+    buckets.set(key, bucket);
+  }}
+  return Array.from(buckets.values()).map((group) => {{
+    group.total /= group.runs;
+    group.correct /= group.runs;
+    group.invalid /= group.runs;
+    group.average_accuracy = group.accuracy_sum / group.runs;
+    return group;
+  }});
+}}
 const selectedValues = () => Object.fromEntries(selectors.map((select) => [select.dataset.filter, select.value]));
 function matchesSelection(group, selected) {{
   return Object.entries(selected).every(([key, value]) => !value || group[key] === value);
@@ -568,7 +745,8 @@ function renderRankedTable(containerId, groups, ascending) {{
   table.className = "insight-table";
   table.innerHTML = "<thead><tr><th>Area</th><th>Correct / valid</th><th>Accuracy</th><th>n</th></tr></thead>";
   const body = document.createElement("tbody");
-  for (const group of groups.slice(0, 5)) {{
+  const limit = containerId === "worst-bbq" ? 10 : 5;
+  for (const group of groups.slice(0, limit)){{
     const bbq = group.dataset === "BBQ";
     const label = bbq ? `${{group.category}} · ${{group.condition}}` : group.subject;
     const row = document.createElement("tr");
@@ -706,32 +884,17 @@ function applyFilters() {{
   const matching = summaryGroups.filter((group) =>
     group.selection_id === selectionId && matchesSelection(group, selected)
   );
-  const totals = matching.reduce((result, group) => {{
-    result.total += group.total;
-    result.correct += group.correct;
-    result.incorrect += group.incorrect;
-    result.invalid += group.invalid;
-    return result;
-  }}, {{total: 0, correct: 0, incorrect: 0, invalid: 0}});
-  const valid = totals.total - totals.invalid;
-  const accuracyText = valid ? `${{(100 * totals.correct / valid).toFixed(1)}}%` : "n/a";
-  document.getElementById("filter-summary").textContent =
-    `Filtered results: ${{totals.correct}} correct / ${{valid}} valid (${{accuracyText}}); ` +
-    `${{totals.incorrect}} wrong, ${{totals.invalid}} invalid, ${{totals.total}} total.`;
-  document.getElementById("kpi-total").textContent = String(totals.total);
-  document.getElementById("kpi-accuracy").textContent = `${{totals.correct}} / ${{valid}} (${{accuracyText}})`;
-  document.getElementById("kpi-wrong").textContent = String(totals.incorrect);
-  document.getElementById("kpi-invalid").textContent = String(totals.invalid);
   document.getElementById("selected-run-meta").textContent =
     `${{run.model_id}} · prompt: ${{run.prompt_condition || "default"}} · ` +
     Object.entries(run.runs).map(([dataset, runId]) => `${{dataset}} run: ${{runId}}`).join(" · ");
 
   const bbq = matching.filter((group) => group.dataset === "BBQ");
+  const allBbq = summaryGroups.filter((group) =>
+    group.dataset === "BBQ" && matchesSelection(group, selected)
+  );
   const mmlu = matching.filter((group) => group.dataset === "MMLU");
-  renderRankedTable("worst-bbq", bbq, true);
+  renderRankedTable("worst-bbq", averageBbqGroups(allBbq), true);
   renderRankedTable("best-bbq", bbq, false);
-  renderRankedTable("worst-mmlu", mmlu, true);
-  renderRankedTable("best-mmlu", mmlu, false);
   renderStackedChart("ambiguous-chart", bbq.filter((group) => group.condition === "ambig"), "ambiguous");
   renderStackedChart("disambiguated-chart", bbq.filter((group) => group.condition === "disambig"), "disambiguated");
   renderMmlu(mmlu);
@@ -879,6 +1042,7 @@ def create_saved_runs_report(
                 "prompt_variant": "custom template" if system_prompt else "",
                 "scoring_mode": str(config.get("scoring_mode", "unknown")),
                 "scoring_method": str(config.get("scoring_method", "unknown")),
+                "enable_thinking": bool(config.get("enable_thinking", False)),
                 "created_at": str(config.get("created_at", "")),
                 "status": str(config.get("status", "unknown")),
                 "dataset": title,

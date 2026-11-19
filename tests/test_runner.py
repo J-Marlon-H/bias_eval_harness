@@ -18,9 +18,11 @@ class FakeBackend:
     model_id = "fake-model"
     metadata = {"backend": "fake"}
 
-    def __init__(self, fail_on_call=None):
+    def __init__(self, fail_on_call=None, generated=None):
         self.calls = 0
+        self.generate_calls = 0
         self.fail_on_call = fail_on_call
+        self.generated = list(generated or ["A"])
 
     def score_options(self, prompts, n_options):
         self.calls += 1
@@ -29,10 +31,40 @@ class FakeBackend:
         return [[float(index) for index in range(n_options)] for _ in prompts]
 
     def generate(self, prompts, max_new_tokens=8):
-        return ["A" for _ in prompts]
+        self.generate_calls += len(prompts)
+        result = self.generated[:len(prompts)]
+        del self.generated[:len(prompts)]
+        return result
 
 
 class RunnerTests(unittest.TestCase):
+    def test_thinking_invalid_answer_uses_short_fallback(self):
+        data = pd.DataFrame([{
+            "id": "Race_ethnicity:1", "category": "Race_ethnicity",
+            "example_id": "1", "question_index": "template",
+            "condition": "ambig", "label": 2, "target_loc": 0,
+            "unknown_loc": 2, "label_type": "label", "context": "Two people.",
+            "question": "Who?", "options": ["Person A", "Person B", "Unknown"],
+            "source": "bbq",
+        }])
+        backend = FakeBackend(generated=["I need more time.", "C"])
+        with tempfile.TemporaryDirectory() as directory:
+            predictions, _, _ = run_evaluation(
+                data,
+                backend,
+                results_dir=directory,
+                enable_thinking=True,
+                scoring_mode="generation",
+                max_new_tokens=512,
+                bootstrap_resamples=0,
+            )
+
+        self.assertEqual(predictions.iloc[0]["prediction"], 2)
+        self.assertTrue(predictions.iloc[0]["fallback_used"])
+        self.assertEqual(predictions.iloc[0]["raw_text"], "I need more time.")
+        self.assertEqual(predictions.iloc[0]["fallback_raw_text"], "C")
+        self.assertEqual(backend.generate_calls, 2)
+
     def test_run_writes_predictions_metrics_and_config(self):
         data = pd.DataFrame([
             {
@@ -140,6 +172,10 @@ class RunnerTests(unittest.TestCase):
                 resume_run_id="auto",
             )
             self.assertEqual(first_backend.calls, 1)
+            config_path = Path(first_run_dir) / "config.json"
+            legacy_config = json.loads(config_path.read_text(encoding="utf-8"))
+            legacy_config.pop("enable_thinking")
+            config_path.write_text(json.dumps(legacy_config), encoding="utf-8")
 
             second_backend = FakeBackend()
             _, _, second_run_dir = run_evaluation(
@@ -149,6 +185,9 @@ class RunnerTests(unittest.TestCase):
                 model_id="fake-model",
                 bootstrap_resamples=1,
                 resume_run_id="auto",
+            )
+            second_config = json.loads(
+                (Path(second_run_dir) / "config.json").read_text(encoding="utf-8")
             )
             other_model_backend = FakeBackend()
             _, _, other_model_run_dir = run_evaluation(
@@ -170,13 +209,35 @@ class RunnerTests(unittest.TestCase):
                 bootstrap_resamples=1,
                 resume_run_id="auto",
             )
+            thinking_backend = FakeBackend()
+            _, _, thinking_run_dir = run_evaluation(
+                data,
+                thinking_backend,
+                results_dir=directory,
+                model_id="fake-model",
+                prompt_condition="plain_thinking",
+                enable_thinking=True,
+                scoring_mode="generation",
+                max_new_tokens=512,
+                bootstrap_resamples=1,
+                resume_run_id="auto",
+            )
+            thinking_config = json.loads(
+                (Path(thinking_run_dir) / "config.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(first_run_dir, second_run_dir)
         self.assertEqual(second_backend.calls, 0)
+        self.assertFalse(second_config["enable_thinking"])
         self.assertNotEqual(first_run_dir, other_model_run_dir)
         self.assertEqual(other_model_backend.calls, 1)
         self.assertNotEqual(first_run_dir, prompted_run_dir)
         self.assertEqual(prompted_backend.calls, 1)
+        self.assertNotEqual(first_run_dir, thinking_run_dir)
+        self.assertEqual(thinking_config["prompt_condition"], "plain_thinking")
+        self.assertTrue(thinking_config["enable_thinking"])
+        self.assertEqual(thinking_config["scoring_mode"], "generation")
+        self.assertEqual(thinking_config["max_new_tokens"], 512)
 
     def test_resume_rejects_changed_sample(self):
         data = pd.DataFrame([{

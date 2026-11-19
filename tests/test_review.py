@@ -133,7 +133,6 @@ class ReviewTests(unittest.TestCase):
             self.assertIn("Correct answer:</strong> C - 7", content)
             self.assertIn("1 incorrect or invalid out of 2", content)
             self.assertIn("<td>1 / 2</td>", content)
-            self.assertIn("Filtered results:", content)
             self.assertIn('data-dataset="MMLU" data-category="" data-condition="" data-subject="math"', content)
             self.assertIn('"total": 2, "correct": 1, "incorrect": 1', content)
 
@@ -231,6 +230,21 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('data-run-id="run-base"', content)
         self.assertIn('data-run-id="run-finetuned"', content)
         self.assertIn('group.selection_id === selectionId', content)
+        comparison = content.split(
+            '<table class="comparison-table">', 1
+        )[1].split("</table>", 1)[0]
+        self.assertIn("All saved runs at a glance", content)
+        self.assertIn("Ambiguous accuracy", comparison)
+        self.assertIn("Disambiguated accuracy", comparison)
+        self.assertIn("Wrong answers", comparison)
+        self.assertIn("Non-discriminating wrong answers", comparison)
+        self.assertNotIn(">Scoring<", comparison)
+        self.assertNotIn(">Thinking<", comparison)
+        self.assertIn("100.0%", comparison)
+        self.assertIn("0.0%", comparison)
+        self.assertNotIn("bias score", comparison)
+        self.assertNotIn("Invalid-answer rate", comparison)
+        self.assertIn("comparison-value accuracy", content)
 
     def test_saved_report_combines_datasets_and_ignores_superseded_run(self):
         bbq_source = pd.DataFrame(

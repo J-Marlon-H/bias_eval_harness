@@ -7,10 +7,19 @@ from typing import Sequence
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _LETTER = re.compile(r"(?<![A-Za-z])([A-Z])(?![A-Za-z])", re.IGNORECASE)
+_ANSWER_MARKER = re.compile(
+    r"(?:final\s+answer|answer|choice)\s*(?:is|:|=)?\s*[\(\[]?([A-Z])[\)\]]?",
+    re.IGNORECASE,
+)
 
 
 def strip_think_blocks(text: str) -> str:
     """Remove complete reasoning blocks emitted by models such as Qwen."""
+    opening = re.search(r"<think\b[^>]*>", text, re.IGNORECASE)
+    if opening and not re.search(
+        r"</think\s*>", text[opening.end():], re.IGNORECASE
+    ):
+        return ""
     return _THINK_BLOCK.sub("", text).strip()
 
 
@@ -20,6 +29,10 @@ def parse_answer(text: str, options: Sequence[str]) -> int | str:
         return "invalid"
     cleaned = strip_think_blocks(text)
     valid_letters = {chr(ord("A") + index): index for index in range(len(options))}
+    for match in reversed(list(_ANSWER_MARKER.finditer(cleaned))):
+        letter = match.group(1).upper()
+        if letter in valid_letters:
+            return valid_letters[letter]
     for match in _LETTER.finditer(cleaned):
         letter = match.group(1).upper()
         if letter in valid_letters:
